@@ -7,32 +7,34 @@ import (
 
 // 代表trie树
 type Tree struct {
-	Root *Node `json:"root"` //根节点
+	root *Node `json:"root"` //根节点
 }
 
 // 代表节点
 type Node struct {
-	IsLast  bool              `json:"is_last"` //表示这个节点是否为最终路由规则
-	Segment string            `json:"segment"` //uri字符串中的某段
-	Handler ControllerHandler `json:"-"`       //处理的handler
-	Childs  []*Node           `json:"childs"`  //节点下的所有子节点
+	isLast   bool                `json:"is_last"` //表示这个节点是否为最终路由规则
+	segment  string              `json:"segment"` //uri字符串中的某段
+	handlers []ControllerHandler `json:"-"`       //处理的handler
+	childs   []*Node             `json:"childs"`  //节点下的所有子节点
+	parent   *Node               `json:"parent"`  //父给节点
 }
 
 func NewTree() *Tree {
 	root := NewNode()
-	return &Tree{Root: root}
+	return &Tree{root: root}
 }
 
 func NewNode() *Node {
 	return &Node{
-		IsLast:  false,
-		Segment: "",
-		Childs:  []*Node{},
+		isLast:   false,
+		segment:  "",
+		handlers: []ControllerHandler{},
+		childs:   []*Node{},
 	}
 }
 
-func (this *Tree) AddRouter(uri string, handler ControllerHandler) error {
-	root := this.Root
+func (this *Tree) AddRouter(uri string, handlers []ControllerHandler) error {
+	root := this.root
 	uri = strings.TrimPrefix(uri, "/")
 
 	if root.MatchNode(uri) != nil {
@@ -55,7 +57,7 @@ func (this *Tree) AddRouter(uri string, handler ControllerHandler) error {
 		//如果有匹配的子节点
 		if len(nodes) > 0 {
 			for _, node := range nodes {
-				if node.Segment == segment {
+				if node.segment == segment {
 					objNode = node
 					break
 				}
@@ -64,12 +66,14 @@ func (this *Tree) AddRouter(uri string, handler ControllerHandler) error {
 
 		if objNode == nil {
 			cnode := NewNode()
-			cnode.Segment = segment
+			cnode.segment = segment
 			if isLast {
-				cnode.IsLast = true
-				cnode.Handler = handler
+				cnode.isLast = true
+				cnode.handlers = handlers
 			}
-			root.Childs = append(root.Childs, cnode)
+			//修改父节点指针
+			cnode.parent = root
+			root.childs = append(root.childs, cnode)
 			objNode = cnode
 		}
 
@@ -78,13 +82,13 @@ func (this *Tree) AddRouter(uri string, handler ControllerHandler) error {
 	return nil
 }
 
-func (this *Tree) FindHandler(uri string) ControllerHandler {
+func (this *Tree) FindNode(uri string) *Node {
 	uri = strings.TrimPrefix(uri, "/")
-	node := this.Root.MatchNode(uri)
+	node := this.root.MatchNode(uri)
 	if node == nil {
 		return nil
 	}
-	return node.Handler
+	return node
 }
 
 // 判断一个segment是否是通用，即以:开头
@@ -94,21 +98,21 @@ func IsWildSegment(segment string) bool {
 
 // 获取所有满足segment规则的子节点
 func (this *Node) FilterChildNodes(segment string) []*Node {
-	if len(this.Childs) == 0 {
+	if len(this.childs) == 0 {
 		return nil
 	}
 	//如果是通配符，则所有下一层子节点都满足条件
 	if IsWildSegment(segment) {
-		return this.Childs
+		return this.childs
 	}
-	nodes := make([]*Node, 0, len(this.Childs))
+	nodes := make([]*Node, 0, len(this.childs))
 
 	//遍历子节点，获取满足规则的
-	for _, v := range this.Childs {
-		if IsWildSegment(v.Segment) {
+	for _, v := range this.childs {
+		if IsWildSegment(v.segment) {
 			//如果子节点有通配符，则满足条件
 			nodes = append(nodes, v)
-		} else if v.Segment == segment {
+		} else if v.segment == segment {
 			//如果文本完全匹配，也满足条件
 			nodes = append(nodes, v)
 		}
@@ -134,7 +138,7 @@ func (this *Node) MatchNode(uri string) *Node {
 	//如果只有最后一个segment，说明是最后的标记
 	if len(segments) == 1 {
 		for _, v := range nodes {
-			if v.IsLast {
+			if v.isLast {
 				return v
 			}
 		}
@@ -150,4 +154,22 @@ func (this *Node) MatchNode(uri string) *Node {
 	}
 
 	return nil
+}
+
+// 解析uri中的参数
+func (this *Node) ParseParamsFromEndNode(uri string) map[string]string {
+	ret := map[string]string{}
+	segments := strings.Split(uri, "/")
+	len := len(segments)
+	cur := this
+	for i := len - 1; i >= 0; i-- {
+		if cur.segment == "" {
+			break
+		}
+		if IsWildSegment(cur.segment) {
+			ret[cur.segment[1:]] = segments[i]
+		}
+		cur = cur.parent
+	}
+	return ret
 }

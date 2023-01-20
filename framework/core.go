@@ -1,15 +1,14 @@
 package framework
 
 import (
-	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"strings"
 )
 
 type Core struct {
-	Router map[string]*Tree `json:"router"`
+	router      map[string]*Tree    `json:"router"`
+	middlewares []ControllerHandler `json:"-"` //中间件处理函数
 }
 
 func NewCore() *Core {
@@ -19,49 +18,60 @@ func NewCore() *Core {
 	router["PUT"] = NewTree()
 	router["DELETE"] = NewTree()
 
-	return &Core{Router: router}
+	return &Core{router: router}
 }
 
 func (this *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	//封装自定义context
 	ctx := NewContext(w, r)
 
-	json, err := json.Marshal(this.Router)
-	fmt.Println(err)
-	fmt.Println(string(json))
-
-	handler := this.FindRouteHandler(r)
-	if handler == nil {
-		ctx.Json(404, "not found")
+	//导找路由
+	node := this.FindRouteNode(r)
+	if node == nil {
+		ctx.SetStatus(404).Json("not found")
 		return
 	}
 
-	if err := handler(ctx); err != nil {
-		ctx.Json(500, "server error")
+	ctx.SetHandlers(node.handlers)
+
+	//解析参数
+	params := node.ParseParamsFromEndNode(r.URL.Path)
+	ctx.SetParams(params)
+
+	if err := ctx.Next(); err != nil {
+		ctx.SetStatus(500).Json("server error")
 		return
 	}
 }
 
-func (this *Core) Get(url string, handler ControllerHandler) {
-	if err := this.Router["GET"].AddRouter(url, handler); err != nil {
+func (this *Core) Use(middlewares ...ControllerHandler) {
+	this.middlewares = append(this.middlewares, middlewares...)
+}
+
+func (this *Core) Get(url string, handlers ...ControllerHandler) {
+	allHandlers := append(this.middlewares, handlers...)
+	if err := this.router["GET"].AddRouter(url, allHandlers); err != nil {
 		log.Fatalln(err)
 	}
 }
 
-func (this *Core) Post(url string, handler ControllerHandler) {
-	if err := this.Router["POST"].AddRouter(url, handler); err != nil {
+func (this *Core) Post(url string, handlers ...ControllerHandler) {
+	allHandlers := append(this.middlewares, handlers...)
+	if err := this.router["POST"].AddRouter(url, allHandlers); err != nil {
 		log.Fatalln(err)
 	}
 }
 
-func (this *Core) Put(url string, handler ControllerHandler) {
-	if err := this.Router["PUT"].AddRouter(url, handler); err != nil {
+func (this *Core) Put(url string, handlers ...ControllerHandler) {
+	allHandlers := append(this.middlewares, handlers...)
+	if err := this.router["PUT"].AddRouter(url, allHandlers); err != nil {
 		log.Fatalln(err)
 	}
 }
 
-func (this *Core) Delete(url string, handler ControllerHandler) {
-	if err := this.Router["DELETE"].AddRouter(url, handler); err != nil {
+func (this *Core) Delete(url string, handlers ...ControllerHandler) {
+	allHandlers := append(this.middlewares, handlers...)
+	if err := this.router["DELETE"].AddRouter(url, allHandlers); err != nil {
 		log.Fatalln(err)
 	}
 }
@@ -70,12 +80,12 @@ func (this *Core) Group(prefix string) IGroup {
 	return NewGroup(this, prefix)
 }
 
-func (this *Core) FindRouteHandler(req *http.Request) ControllerHandler {
+func (this *Core) FindRouteNode(req *http.Request) *Node {
 	path := strings.ToUpper(req.URL.Path)
 	method := strings.ToUpper(req.Method)
 
-	if m, ok := this.Router[method]; ok {
-		return m.FindHandler(path)
+	if m, ok := this.router[method]; ok {
+		return m.FindNode(path)
 	}
 	return nil
 }
